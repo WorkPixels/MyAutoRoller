@@ -1,0 +1,9 @@
+## Interface: 16001, 11508, 11509, 11503, 20504, 20505, 20506, 30403, 30405, 110000, 110100, 110200, 120000, 120001, 120100, 120105
+## Title: MyAutoRoller
+## Notes: Automatically rolls Need, Greed, Disenchant, or Pass based on item quality and stat weights.
+## Version: 1.1.0
+## Author: Antigravity
+## SavedVariables: MyAutoRollerDB
+## SavedVariablesPerCharacter: MyAutoRollerCharDB
+
+MyAutoRoller.lua
