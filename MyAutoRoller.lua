@@ -2895,6 +2895,21 @@ local function IsItemUsableByClass(itemLink)
         end
     end
 
+    -- 6b. Off-Hand weapons (INVTYPE_WEAPONOFFHAND) require Dual Wield and should not replace an equipped Shield
+    if itemEquipLoc == "INVTYPE_WEAPONOFFHAND" then
+        local canDW = CanDualWield and CanDualWield()
+        if not canDW then
+            return false, "Off-Hand Weapon (Cannot Dual Wield)"
+        end
+        local offHandLink = GetInventoryItemLink("player", 17)
+        if offHandLink then
+            local _, _, _, ohLoc = GetItemInfoInstant(offHandLink)
+            if ohLoc == "INVTYPE_SHIELD" then
+                return false, "Off-Hand Weapon (Shield Equipped)"
+            end
+        end
+    end
+
     -- 7. Check Class-Incompatible Stats (prevent rolling Need on off-class stat items)
     local flags = GetItemStatFlags(itemLink, scanLines)
     local hasPhysicalStats = flags.str or flags.agi or flags.ap or flags.meleeCrit or flags.def or flags.dodge or flags.parry or flags.block or flags.arp or flags.exp
