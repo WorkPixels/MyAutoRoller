@@ -2379,6 +2379,21 @@ local function GetEquippedStatsForLocation(itemEquipLoc, targetItemLink)
         end
     end
 
+    -- Case 3: One-Hand weapon (INVTYPE_WEAPON) should only compare against Main Hand (Slot 16)
+    -- if the player cannot dual-wield, or if Slot 17 currently holds a Shield / Off-Hand Frill.
+    if itemEquipLoc == "INVTYPE_WEAPON" then
+        local canDW = CanDualWield and CanDualWield()
+        local offHandLink = GetInventoryItemLink("player", 17)
+        local offHandLoc = nil
+        if offHandLink then
+            local _, _, _, ohLocInstant = GetItemInfoInstant(offHandLink)
+            offHandLoc = ohLocInstant
+        end
+        if (not canDW) or offHandLoc == "INVTYPE_SHIELD" or offHandLoc == "INVTYPE_HOLDABLE" then
+            slots = { 16 }
+        end
+    end
+
     -- Standard slot comparison (Armor, Rings, Trinkets, or matching weapon slots)
     local minEquippedScore = 999999
     local hasEquippedItem = false
