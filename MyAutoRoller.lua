@@ -468,6 +468,182 @@ local function ResetCurrentProfile()
     print(string.format("|cff00ff00MyAutoRoller|r: Reset profile '|cffffd000%s|r' to defaults (all weights set to 0.00).", cur))
 end
 
+-- Pawn v1 String Parser & Importer
+-- Maps lowercase Pawn stat keys to MyAutoRoller ITEM_MOD_*_SHORT keys.
+local PAWN_STAT_MAP = {
+    strength = "ITEM_MOD_STRENGTH_SHORT",
+    agility = "ITEM_MOD_AGILITY_SHORT",
+    stamina = "ITEM_MOD_STAMINA_SHORT",
+    intellect = "ITEM_MOD_INTELLECT_SHORT",
+    spirit = "ITEM_MOD_SPIRIT_SHORT",
+    spellpower = "ITEM_MOD_SPELL_POWER_SHORT",
+    spelldamage = "ITEM_MOD_SPELL_POWER_SHORT",
+    healing = "ITEM_MOD_HEALING_DONE_SHORT",
+    ap = "ITEM_MOD_ATTACK_POWER_SHORT",
+    attackpower = "ITEM_MOD_ATTACK_POWER_SHORT",
+    feralap = "ITEM_MOD_ATTACK_POWER_SHORT",
+    critrating = "ITEM_MOD_CRIT_RATING_SHORT",
+    spellcritrating = "ITEM_MOD_CRIT_SPELL_RATING_SHORT",
+    hitrating = "ITEM_MOD_HIT_RATING_SHORT",
+    spellhitrating = "ITEM_MOD_HIT_RATING_SHORT",
+    hasterating = "ITEM_MOD_HASTE_RATING_SHORT",
+    spellhasterating = "ITEM_MOD_HASTE_SPELL_RATING_SHORT",
+    armorpenetration = "ITEM_MOD_ARMOR_PENETRATION_RATING_SHORT",
+    spellpenetration = "ITEM_MOD_SPELL_PENETRATION_SHORT",
+    mp5 = "ITEM_MOD_POWER_REGEN0_SHORT",
+    defenserating = "ITEM_MOD_DEFENSE_SKILL_RATING_SHORT",
+    dodgerating = "ITEM_MOD_DODGE_RATING_SHORT",
+    parryrating = "ITEM_MOD_PARRY_RATING_SHORT",
+    blockrating = "ITEM_MOD_BLOCK_RATING_SHORT",
+    blockvalue = "ITEM_MOD_BLOCK_VALUE_SHORT",
+    armor = "ITEM_MOD_ARMOR_SHORT",
+    meleedps = "ITEM_MOD_WEAPON_DPS_SHORT",
+    dps = "ITEM_MOD_WEAPON_DPS_SHORT",
+    mainhanddps = "ITEM_MOD_WEAPON_DPS_SHORT",
+    rangeddps = "ITEM_MOD_WEAPON_RANGED_DPS_SHORT",
+    expertiserating = "ITEM_MOD_EXPERTISE_RATING_SHORT",
+    resiliencerating = "ITEM_MOD_RESILIENCE_RATING_SHORT",
+}
+
+-- Priority when multiple Pawn keys map to the same MyAutoRoller key (higher wins)
+local PAWN_KEY_PRIORITY = {
+    spellpower = 3,
+    spelldamage = 2,
+    ap = 3,
+    attackpower = 3,
+    feralap = 1,
+    hitrating = 2,
+    spellhitrating = 1,
+    meleedps = 3,
+    dps = 2,
+    mainhanddps = 1,
+}
+
+local PAWN_SCHOOL_SPELL_KEYS = {
+    shadowspelldamage = true,
+    firespelldamage = true,
+    frostspelldamage = true,
+    arcanespelldamage = true,
+    naturespelldamage = true,
+    holyspelldamage = true,
+}
+
+local function ParsePawnString(rawStr)
+    if type(rawStr) ~= "string" then
+        return nil, "Invalid input."
+    end
+
+    local s = strtrim(rawStr)
+    if s == "" then
+        return nil, "Pawn string is empty."
+    end
+
+    -- Strip optional surrounding parentheses
+    if string.sub(s, 1, 1) == "(" and string.sub(s, -1) == ")" then
+        s = strtrim(string.sub(s, 2, -2))
+    end
+
+    -- Match: Pawn: v1: "Profile Name": <stats>
+    local rest = string.match(s, "^[Pp][Aa][Ww][Nn]%s*:%s*[Vv]1%s*:%s*(.+)$")
+    if not rest then
+        return nil, "String must start with '( Pawn: v1: ... )'."
+    end
+
+    local profileName, statsPart = string.match(rest, '^"([^"]+)"%s*:%s*(.+)$')
+    if not profileName then
+        -- Fallback if unquoted profile name before ':'
+        profileName, statsPart = string.match(rest, "^([^:]+):%s*(.+)$")
+    end
+    if not profileName or not statsPart then
+        return nil, "Could not find profile name and stat weights in Pawn string."
+    end
+    profileName = strtrim(profileName)
+    if profileName == "" then
+        profileName = "Pawn Import"
+    end
+
+    local weights = {}
+    local priorities = {}
+    local maxSchoolSpell = 0
+    local importedCount = 0
+
+    for entry in string.gmatch(statsPart, "[^,]+") do
+        local k, v = string.match(entry, "^%s*([%w_]+)%s*=%s*(.-)%s*$")
+        if k and v then
+            local lk = string.lower(k)
+            local num = tonumber(v)
+            if num and num > 0 then
+                local marKey = PAWN_STAT_MAP[lk]
+                if marKey then
+                    local prio = PAWN_KEY_PRIORITY[lk] or 1
+                    if not priorities[marKey] or prio >= priorities[marKey] then
+                        if not weights[marKey] then
+                            importedCount = importedCount + 1
+                        end
+                        weights[marKey] = num
+                        priorities[marKey] = prio
+                    end
+                elseif PAWN_SCHOOL_SPELL_KEYS[lk] and num > maxSchoolSpell then
+                    maxSchoolSpell = num
+                end
+            end
+        end
+    end
+
+    if maxSchoolSpell > 0 and not weights["ITEM_MOD_SPELL_POWER_SHORT"] then
+        weights["ITEM_MOD_SPELL_POWER_SHORT"] = maxSchoolSpell
+        importedCount = importedCount + 1
+    end
+
+    if importedCount == 0 then
+        return nil, "No supported numeric stat weights were found in that Pawn string."
+    end
+
+    return {
+        name = profileName,
+        weights = weights,
+        importedCount = importedCount,
+    }
+end
+
+local function ImportPawnString(rawStr, overwriteExisting)
+    if not MyAutoRollerCharDB then return false, "Character database not initialized yet." end
+    if not MyAutoRollerCharDB.profiles then MyAutoRollerCharDB.profiles = {} end
+
+    local parsed, err = ParsePawnString(rawStr)
+    if not parsed then
+        print(string.format("|cffff0000MyAutoRoller Pawn Import Error:|r %s", err or "Invalid Pawn string."))
+        return false, err
+    end
+
+    local targetName = parsed.name
+    if MyAutoRollerCharDB.profiles[targetName] and not overwriteExisting then
+        local idx = 2
+        while MyAutoRollerCharDB.profiles[targetName .. " (" .. idx .. ")"] do
+            idx = idx + 1
+        end
+        targetName = targetName .. " (" .. idx .. ")"
+    end
+
+    local newProf = {
+        statWeights = {},
+        statEnabled = {},
+        minWeaponSpeed1H = 0.00,
+        minWeaponSpeed2H = 0.00,
+        minWeaponSpeedRanged = 0.00,
+    }
+    for _, conf in ipairs(STATS_CONFIG) do
+        local w = parsed.weights[conf.key] or 0
+        newProf.statWeights[conf.key] = w
+        newProf.statEnabled[conf.key] = true
+    end
+
+    MyAutoRollerCharDB.profiles[targetName] = newProf
+    SetActiveProfile(targetName, true)
+    print(string.format("|cff00ff00MyAutoRoller|r: Imported Pawn profile '|cffffd000%s|r' (%d stat weights loaded) and set it active.", targetName, parsed.importedCount))
+    return true, targetName
+end
+
 -- Static Popup Dialogs for Profile Management
 StaticPopupDialogs["MYAUTOROLLER_NEW_PROFILE"] = {
     text = "Enter a name for the new stat weight profile:",
@@ -664,6 +840,135 @@ btnReset:SetScript("OnClick", function()
     StaticPopup_Show("MYAUTOROLLER_RESET_PROFILE", cur)
 end)
 
+-- Pawn Import Modal Dialog
+local pawnImportFrame = CreateFrame("Frame", "MyAutoRollerPawnImportFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+pawnImportFrame:SetSize(480, 250)
+pawnImportFrame:SetPoint("CENTER")
+pawnImportFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+pawnImportFrame:SetToplevel(true)
+pawnImportFrame:SetClampedToScreen(true)
+pawnImportFrame:EnableMouse(true)
+pawnImportFrame:SetMovable(true)
+pawnImportFrame:RegisterForDrag("LeftButton")
+pawnImportFrame:SetScript("OnDragStart", pawnImportFrame.StartMoving)
+pawnImportFrame:SetScript("OnDragStop", pawnImportFrame.StopMovingOrSizing)
+pawnImportFrame:Hide()
+
+if pawnImportFrame.SetBackdrop then
+    pawnImportFrame:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 16,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 }
+    })
+    pawnImportFrame:SetBackdropColor(0.08, 0.08, 0.10, 0.98)
+    pawnImportFrame:SetBackdropBorderColor(0.45, 0.45, 0.5, 1)
+end
+
+if UISpecialFrames then
+    table.insert(UISpecialFrames, "MyAutoRollerPawnImportFrame")
+end
+
+local pawnTitle = pawnImportFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+pawnTitle:SetPoint("TOPLEFT", 16, -14)
+pawnTitle:SetText("Import Pawn String")
+
+local pawnCloseBtn = CreateFrame("Button", nil, pawnImportFrame, "UIPanelCloseButton")
+pawnCloseBtn:SetPoint("TOPRIGHT", -4, -4)
+
+local pawnHint = pawnImportFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+pawnHint:SetPoint("TOPLEFT", 16, -40)
+pawnHint:SetText("Paste a Pawn v1 string below (e.g. ( Pawn: v1: \"Warrior: Protection\": ... )):")
+
+local pawnInputBg = CreateFrame("Frame", nil, pawnImportFrame, BackdropTemplateMixin and "BackdropTemplate" or nil)
+pawnInputBg:SetPoint("TOPLEFT", 16, -60)
+pawnInputBg:SetPoint("TOPRIGHT", -16, -60)
+pawnInputBg:SetHeight(110)
+if pawnInputBg.SetBackdrop then
+    pawnInputBg:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 12, edgeSize = 12,
+        insets = { left = 3, right = 3, top = 3, bottom = 3 }
+    })
+    pawnInputBg:SetBackdropColor(0.03, 0.03, 0.04, 0.95)
+    pawnInputBg:SetBackdropBorderColor(0.35, 0.35, 0.4, 1)
+end
+
+local pawnScroll = CreateFrame("ScrollFrame", "MyAutoRollerPawnScrollFrame", pawnInputBg, "UIPanelScrollFrameTemplate")
+pawnScroll:SetPoint("TOPLEFT", 6, -6)
+pawnScroll:SetPoint("BOTTOMRIGHT", -26, 6)
+
+local pawnEditBox = CreateFrame("EditBox", "MyAutoRollerPawnEditBox", pawnScroll)
+pawnEditBox:SetMultiLine(true)
+pawnEditBox:SetMaxLetters(0)
+pawnEditBox:SetFontObject("ChatFontNormal")
+pawnEditBox:SetWidth(410)
+pawnEditBox:SetAutoFocus(false)
+pawnEditBox:SetScript("OnEscapePressed", function() pawnImportFrame:Hide() end)
+pawnScroll:SetScrollChild(pawnEditBox)
+
+pawnInputBg:EnableMouse(true)
+pawnInputBg:SetScript("OnMouseDown", function() pawnEditBox:SetFocus() end)
+
+local pawnOverwriteCB = CreateFrame("CheckButton", "MyAutoRoller_CB_PawnOverwrite", pawnImportFrame, "InterfaceOptionsCheckButtonTemplate")
+pawnOverwriteCB:SetPoint("TOPLEFT", 14, -176)
+local pawnOverwriteText = _G[pawnOverwriteCB:GetName() .. "Text"] or pawnOverwriteCB.Text
+if pawnOverwriteText then
+    pawnOverwriteText:SetText("Overwrite existing profile if name matches")
+    pawnOverwriteText:SetFontObject("GameFontHighlightSmall")
+end
+
+local pawnErrorText = pawnImportFrame:CreateFontString(nil, "OVERLAY", "GameFontRedSmall")
+pawnErrorText:SetPoint("TOPLEFT", 18, -200)
+pawnErrorText:SetPoint("TOPRIGHT", -18, -200)
+pawnErrorText:SetJustifyH("LEFT")
+pawnErrorText:SetText("")
+
+local pawnCancelBtn = CreateFrame("Button", nil, pawnImportFrame, "UIPanelButtonTemplate")
+pawnCancelBtn:SetSize(80, 22)
+pawnCancelBtn:SetPoint("BOTTOMRIGHT", -16, 14)
+pawnCancelBtn:SetText("Cancel")
+pawnCancelBtn:SetScript("OnClick", function() pawnImportFrame:Hide() end)
+
+local pawnDoImportBtn = CreateFrame("Button", nil, pawnImportFrame, "UIPanelButtonTemplate")
+pawnDoImportBtn:SetSize(90, 22)
+pawnDoImportBtn:SetPoint("RIGHT", pawnCancelBtn, "LEFT", -8, 0)
+pawnDoImportBtn:SetText("Import")
+
+local function SubmitPawnImport()
+    local txt = pawnEditBox:GetText()
+    local overwrite = pawnOverwriteCB:GetChecked() and true or false
+    local ok, res = ImportPawnString(txt, overwrite)
+    if ok then
+        pawnErrorText:SetText("")
+        pawnImportFrame:Hide()
+    else
+        pawnErrorText:SetText(res or "Invalid Pawn string.")
+    end
+end
+
+pawnDoImportBtn:SetScript("OnClick", SubmitPawnImport)
+pawnEditBox:SetScript("OnEnterPressed", function(self)
+    if IsControlKeyDown() then
+        SubmitPawnImport()
+    end
+end)
+
+local function ShowPawnImportDialog()
+    pawnErrorText:SetText("")
+    pawnEditBox:SetText("")
+    pawnImportFrame:Show()
+    pawnEditBox:SetFocus()
+end
+
+local btnImportPawn = CreateFrame("Button", "MyAutoRoller_Btn_ImportPawn", subPanel, "UIPanelButtonTemplate")
+btnImportPawn:SetSize(92, 22)
+btnImportPawn:SetPoint("LEFT", btnReset, "RIGHT", 8, 0)
+btnImportPawn:SetText("Import Pawn")
+AddButtonTooltip(btnImportPawn, "Import Pawn String", "Paste a Pawn v1 stat weight string to create or update a profile.")
+btnImportPawn:SetScript("OnClick", ShowPawnImportDialog)
+
 -- ScrollFrame Container for Stat Controls
 local scrollFrame = CreateFrame("ScrollFrame", "MyAutoRollerStatScrollFrame", subPanel, "UIPanelScrollFrameTemplate")
 scrollFrame:SetPoint("TOPLEFT", 10, -118)
@@ -749,8 +1054,9 @@ local function CreateStatControls(statList, startX)
         editBoxes[conf.key] = eb
 
         slider:SetScript("OnValueChanged", function(self, value)
+            if isProgrammaticChange then return end
             value = tonumber(string.format("%.2f", value))
-            if not isProgrammaticChange and editBoxes[self.statKey] then
+            if editBoxes[self.statKey] then
                 editBoxes[self.statKey]:SetText(string.format("%.2f", value))
             end
             if MyAutoRollerCharDB and MyAutoRollerCharDB.statWeights then
@@ -1195,10 +1501,20 @@ SlashCmdList["MYAUTOROLLER"] = function(msg)
         return
     end
 
+    if cmd == "import" or cmd == "pawn" then
+        if arg and arg ~= "" then
+            ImportPawnString(arg, false)
+        else
+            ShowPawnImportDialog()
+        end
+        return
+    end
+
     if cmd == "help" then
         print("|cff00ff00MyAutoRoller Slash Commands:|r")
         print("  |cff0070dd/mar|r - Open configuration panel")
         print("  |cff0070dd/mar weights|r - Open Stat Weights panel")
+        print("  |cff0070dd/mar import [pawn string]|r - Import a Pawn v1 stat weight string")
         print("  |cff0070dd/mar tracker|r - Toggle Live Loot Tracker window")
         print("  |cff0070dd/mar profile|r - List all stat weight profiles")
         print("  |cff0070dd/mar profile <name>|r - Switch active profile (supports partial names)")
